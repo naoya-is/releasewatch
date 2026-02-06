@@ -1,0 +1,64 @@
+name: Apply Checked Updates
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to apply'
+        required: true
+        type: string
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest branch
+        uses: actions/checkout@v4
+        with:
+          ref: latest
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Get PR body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr view ${{ inputs.pr_number }} --json body --jq '.body' > /tmp/pr_body.txt
+          echo "PR body:"
+          cat /tmp/pr_body.txt
+
+      - name: Apply checked items
+        run: |
+          python automation/tools_apply_checked.py \
+            --csv version.csv \
+            --out version.csv \
+            --pr-body /tmp/pr_body.txt \
+            -v
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet version.csv; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push to main
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add version.csv
+          git commit -m "chore: apply selected updates from PR #${{ inputs.pr_number }}"
+          git push origin latest:main
+
+      - name: Close PR
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr close ${{ inputs.pr_number }} --comment "Applied selected updates to main."

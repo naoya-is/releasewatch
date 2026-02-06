@@ -1,0 +1,57 @@
+name: Create Update PR
+
+on:
+  schedule:
+    # 毎週火曜 10:00 UTC
+    - cron: '0 10 * * 2'
+  workflow_dispatch:
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest branch
+        uses: actions/checkout@v4
+        with:
+          ref: latest
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate checklist
+        id: checklist
+        run: |
+          BODY=$(python automation/tools_generate_checklist.py --csv version.csv)
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          if echo "$BODY" | grep -q "^\- \[ \]"; then
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create PR branch and push
+        if: steps.checklist.outputs.has_updates == 'true'
+        run: |
+          BRANCH_NAME="update-desired-$(date +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH_NAME"
+          git commit --allow-empty -m "chore: update desired versions $(date +%Y-%m-%d)"
+          git push origin "$BRANCH_NAME"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Create Pull Request
+        if: steps.checklist.outputs.has_updates == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "chore: update desired versions ($(date +%Y-%m-%d))" \
+            --body "${{ steps.checklist.outputs.body }}" \
+            --base main \
+            --head "$BRANCH_NAME"
