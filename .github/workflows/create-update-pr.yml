@@ -56,7 +56,7 @@ jobs:
       - name: Create PR branch and push
         if: steps.checklist.outputs.has_updates == 'true'
         run: |
-          BRANCH_NAME="update-desired-$(date +%Y%m%d)"
+          BRANCH_NAME="review-updates-$(date +%Y-%m-%d)"
           git checkout -b "$BRANCH_NAME"
           git commit --allow-empty -m "chore: update desired versions $(date +%Y-%m-%d)"
           git push origin "$BRANCH_NAME"

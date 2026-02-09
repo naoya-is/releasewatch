@@ -1,6 +1,8 @@
 name: Apply Checked Updates
 
 on:
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -11,6 +13,14 @@ on:
 jobs:
   apply:
     runs-on: ubuntu-latest
+    # PRコメントで /apply の場合、または手動実行の場合
+    if: >
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/apply')) ||
+      github.event_name == 'workflow_dispatch'
+    env:
+      PR_NUMBER: ${{ github.event.issue.number || inputs.pr_number }}
     steps:
       - name: Install internal CA
         run: |
@@ -20,11 +30,11 @@ jobs:
           sudo update-ca-certificates --fresh
           git config --global http.sslCAInfo /etc/ssl/certs/ca-certificates.crt
 
-      - name: Checkout latest branch
+      - name: Checkout repository
         run: |
           REPO_URL="${{ gitea.server_url }}/${{ gitea.repository }}.git"
           AUTH_URL=$(echo "$REPO_URL" | sed "s|https://|https://${{ secrets.PROXY_USER }}:${{ secrets.PROXY_PASS }}@|")
-          git clone --depth 1 --branch latest "$AUTH_URL" .
+          git clone --depth 1 --branch "${{ gitea.ref_name }}" "$AUTH_URL" .
           git remote set-url origin "$REPO_URL"
           git config user.name "gitea-actions[bot]"
           git config user.email "gitea-actions[bot]@users.noreply.gitea.com"
@@ -46,7 +56,7 @@ jobs:
           HTTP_PROXY: ${{ secrets.PROXY_URL }}
           HTTPS_PROXY: ${{ secrets.PROXY_URL }}
         run: |
-          API_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/pulls/${{ inputs.pr_number }}"
+          API_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/pulls/${{ env.PR_NUMBER }}"
           curl -s "$API_URL" \
             -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
             | jq -r '.body' > /tmp/pr_body.txt
@@ -70,12 +80,12 @@ jobs:
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Commit and push to main
+      - name: Commit and push
         if: steps.changes.outputs.changed == 'true'
         run: |
           git add version.csv
-          git commit -m "chore: apply selected updates from PR #${{ inputs.pr_number }}"
-          git push origin latest:main
+          git commit -m "chore: apply selected updates from PR #${{ env.PR_NUMBER }}"
+          git push origin HEAD
 
       - name: Close PR
         if: steps.changes.outputs.changed == 'true'
@@ -83,14 +93,14 @@ jobs:
           HTTP_PROXY: ${{ secrets.PROXY_URL }}
           HTTPS_PROXY: ${{ secrets.PROXY_URL }}
         run: |
-          API_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/pulls/${{ inputs.pr_number }}"
+          API_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/pulls/${{ env.PR_NUMBER }}"
 
           # Add comment
-          COMMENT_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/issues/${{ inputs.pr_number }}/comments"
+          COMMENT_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/issues/${{ env.PR_NUMBER }}/comments"
           curl -X POST "$COMMENT_URL" \
             -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d '{"body": "Applied selected updates to main."}'
+            -d '{"body": "✅ Applied selected updates."}'
 
           # Close PR
           curl -X PATCH "$API_URL" \
