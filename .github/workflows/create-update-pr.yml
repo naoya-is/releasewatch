@@ -2,23 +2,42 @@ name: Create Update PR
 
 on:
   schedule:
-    # 毎週火曜 10:00 UTC
-    - cron: '0 10 * * 2'
+    # 毎週火曜 10:00 JST = 1:00 UTC
+    - cron: '0 1 * * 2'
   workflow_dispatch:
 
 jobs:
   create-pr:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout latest branch
-        uses: actions/checkout@v4
-        with:
-          ref: latest
+      - name: Install internal CA
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.CA_CERT_B64 }}" | base64 -d \
+            | sudo tee /usr/local/share/ca-certificates/org-internal-ca.crt >/dev/null
+          sudo update-ca-certificates --fresh
+          git config --global http.sslCAInfo /etc/ssl/certs/ca-certificates.crt
+
+      - name: Checkout repository
+        run: |
+          REPO_URL="${{ gitea.server_url }}/${{ gitea.repository }}.git"
+          AUTH_URL=$(echo "$REPO_URL" | sed "s|https://|https://${{ secrets.PROXY_USER }}:${{ secrets.PROXY_PASS }}@|")
+          git clone --depth 1 --branch "${{ gitea.ref_name }}" "$AUTH_URL" .
+          git remote set-url origin "$REPO_URL"
+          git config user.name "gitea-actions[bot]"
+          git config user.email "gitea-actions[bot]@users.noreply.gitea.com"
+          git config credential.helper store
+          echo "https://${{ secrets.PROXY_USER }}:${{ secrets.PROXY_PASS }}@${{ secrets.REPO_HOST }}" > ~/.git-credentials
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+        env:
+          HTTP_PROXY: ${{ secrets.PROXY_URL }}
+          HTTPS_PROXY: ${{ secrets.PROXY_URL }}
+          http_proxy: ${{ secrets.PROXY_URL }}
+          https_proxy: ${{ secrets.PROXY_URL }}
 
       - name: Generate checklist
         id: checklist
@@ -38,8 +57,6 @@ jobs:
         if: steps.checklist.outputs.has_updates == 'true'
         run: |
           BRANCH_NAME="update-desired-$(date +%Y%m%d)"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH_NAME"
           git commit --allow-empty -m "chore: update desired versions $(date +%Y-%m-%d)"
           git push origin "$BRANCH_NAME"
@@ -48,10 +65,20 @@ jobs:
       - name: Create Pull Request
         if: steps.checklist.outputs.has_updates == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HTTP_PROXY: ${{ secrets.PROXY_URL }}
+          HTTPS_PROXY: ${{ secrets.PROXY_URL }}
         run: |
-          gh pr create \
-            --title "chore: update desired versions ($(date +%Y-%m-%d))" \
-            --body "${{ steps.checklist.outputs.body }}" \
-            --base main \
-            --head "$BRANCH_NAME"
+          API_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/pulls"
+
+          # Escape body for JSON
+          BODY_ESCAPED=$(echo '${{ steps.checklist.outputs.body }}' | jq -Rs .)
+
+          curl -X POST "$API_URL" \
+            -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"title\": \"chore: update desired versions ($(date +%Y-%m-%d))\",
+              \"body\": $BODY_ESCAPED,
+              \"base\": \"${{ gitea.ref_name }}\",
+              \"head\": \"$BRANCH_NAME\"
+            }"

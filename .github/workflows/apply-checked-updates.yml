@@ -12,21 +12,44 @@ jobs:
   apply:
     runs-on: ubuntu-latest
     steps:
+      - name: Install internal CA
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.CA_CERT_B64 }}" | base64 -d \
+            | sudo tee /usr/local/share/ca-certificates/org-internal-ca.crt >/dev/null
+          sudo update-ca-certificates --fresh
+          git config --global http.sslCAInfo /etc/ssl/certs/ca-certificates.crt
+
       - name: Checkout latest branch
-        uses: actions/checkout@v4
-        with:
-          ref: latest
+        run: |
+          REPO_URL="${{ gitea.server_url }}/${{ gitea.repository }}.git"
+          AUTH_URL=$(echo "$REPO_URL" | sed "s|https://|https://${{ secrets.PROXY_USER }}:${{ secrets.PROXY_PASS }}@|")
+          git clone --depth 1 --branch latest "$AUTH_URL" .
+          git remote set-url origin "$REPO_URL"
+          git config user.name "gitea-actions[bot]"
+          git config user.email "gitea-actions[bot]@users.noreply.gitea.com"
+          git config credential.helper store
+          echo "https://${{ secrets.PROXY_USER }}:${{ secrets.PROXY_PASS }}@${{ secrets.REPO_HOST }}" > ~/.git-credentials
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+        env:
+          HTTP_PROXY: ${{ secrets.PROXY_URL }}
+          HTTPS_PROXY: ${{ secrets.PROXY_URL }}
+          http_proxy: ${{ secrets.PROXY_URL }}
+          https_proxy: ${{ secrets.PROXY_URL }}
 
       - name: Get PR body
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HTTP_PROXY: ${{ secrets.PROXY_URL }}
+          HTTPS_PROXY: ${{ secrets.PROXY_URL }}
         run: |
-          gh pr view ${{ inputs.pr_number }} --json body --jq '.body' > /tmp/pr_body.txt
+          API_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/pulls/${{ inputs.pr_number }}"
+          curl -s "$API_URL" \
+            -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+            | jq -r '.body' > /tmp/pr_body.txt
           echo "PR body:"
           cat /tmp/pr_body.txt
 
@@ -50,8 +73,6 @@ jobs:
       - name: Commit and push to main
         if: steps.changes.outputs.changed == 'true'
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add version.csv
           git commit -m "chore: apply selected updates from PR #${{ inputs.pr_number }}"
           git push origin latest:main
@@ -59,6 +80,20 @@ jobs:
       - name: Close PR
         if: steps.changes.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HTTP_PROXY: ${{ secrets.PROXY_URL }}
+          HTTPS_PROXY: ${{ secrets.PROXY_URL }}
         run: |
-          gh pr close ${{ inputs.pr_number }} --comment "Applied selected updates to main."
+          API_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/pulls/${{ inputs.pr_number }}"
+
+          # Add comment
+          COMMENT_URL="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/issues/${{ inputs.pr_number }}/comments"
+          curl -X POST "$COMMENT_URL" \
+            -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"body": "Applied selected updates to main."}'
+
+          # Close PR
+          curl -X PATCH "$API_URL" \
+            -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"state": "closed"}'

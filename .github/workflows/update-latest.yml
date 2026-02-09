@@ -6,43 +6,28 @@ on:
     - cron: '0 0 * * 2'
   workflow_dispatch:
 
-env:
-  USE_PROXY: ${{ secrets.PROXY_URL != '' }}
-
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
       - name: Install internal CA
-        if: ${{ env.USE_PROXY == 'true' }}
         run: |
           set -euo pipefail
           echo "${{ secrets.CA_CERT_B64 }}" | base64 -d \
-            | sudo tee /usr/local/share/ca-certificates/internal-ca.crt >/dev/null
+            | sudo tee /usr/local/share/ca-certificates/org-internal-ca.crt >/dev/null
           sudo update-ca-certificates --fresh
           git config --global http.sslCAInfo /etc/ssl/certs/ca-certificates.crt
 
-      - name: Checkout repository (with proxy auth)
-        if: ${{ env.USE_PROXY == 'true' }}
+      - name: Checkout repository
         run: |
-          REPO_URL="${{ github.server_url }}/${{ github.repository }}.git"
+          REPO_URL="${{ gitea.server_url }}/${{ gitea.repository }}.git"
           AUTH_URL=$(echo "$REPO_URL" | sed "s|https://|https://${{ secrets.PROXY_USER }}:${{ secrets.PROXY_PASS }}@|")
-          git clone --depth 1 --branch ${{ github.ref_name }} "$AUTH_URL" .
+          git clone --depth 1 --branch "${{ gitea.ref_name }}" "$AUTH_URL" .
           git remote set-url origin "$REPO_URL"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "gitea-actions[bot]"
+          git config user.email "gitea-actions[bot]@users.noreply.gitea.com"
           git config credential.helper store
           echo "https://${{ secrets.PROXY_USER }}:${{ secrets.PROXY_PASS }}@${{ secrets.REPO_HOST }}" > ~/.git-credentials
-
-      - name: Checkout repository
-        if: ${{ env.USE_PROXY != 'true' }}
-        uses: actions/checkout@v4
-
-      - name: Configure git user
-        if: ${{ env.USE_PROXY != 'true' }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -62,7 +47,7 @@ jobs:
 
       - name: Run update script
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_API_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_API_TOKEN }}
           HTTP_PROXY: ${{ secrets.PROXY_URL }}
           HTTPS_PROXY: ${{ secrets.PROXY_URL }}
           http_proxy: ${{ secrets.PROXY_URL }}
